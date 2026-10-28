@@ -1,0 +1,198 @@
+
+// ============================================================
+// USER SETTINGS
+// ============================================================
+
+// Select the input CZI file interactively.
+inputPath = File.openDialog("Select a CZI image");
+
+// Stop if no file was selected.
+if (inputPath == "") {
+    exit("No input file selected.");
+}
+
+// Maximum number of series to test.
+// Series indices start at 0.
+// Increase this value if your file contains more series.
+maxSeries = 129;
+
+// Find Maxima prominence thresholds.
+// These values depend on image intensity and acquisition settings.
+promC1 = 1000;
+promC3 = 10000;
+
+// Channel indices after split_channels.
+// These are zero-based positions in the image-title list.
+// Verify that channel 1 corresponds to living cells
+// and channel 3 corresponds to dead cells in your dataset.
+livingChannelIndex = 0;
+deadChannelIndex = 2;
+
+// Export results as CSV next to the input file.
+outputPath = inputPath;
+dot = lastIndexOf(outputPath, ".");
+if (dot >= 0) {
+    outputPath = substring(outputPath, 0, dot);
+}
+outputPath = outputPath + "_live_dead_counts.csv";
+
+// ============================================================
+// INITIALIZATION
+// ============================================================
+
+run("Close All");
+run("Clear Results");
+
+setBatchMode(false);
+
+// Store results in arrays so Find Maxima cannot erase them.
+seriesIDs = newArray(maxSeries);
+livingCounts = newArray(maxSeries);
+deadCounts = newArray(maxSeries);
+totalCounts = newArray(maxSeries);
+deadPercentages = newArray(maxSeries);
+
+processed = 0;
+skipped = 0;
+
+// ============================================================
+// PROCESS EACH SERIES
+// ============================================================
+
+for (series = 0; series < maxSeries; series++) {
+
+    // Ensure that no images from the previous iteration remain open.
+    while (nImages > 0) {
+        selectImage(getImageID());
+        close();
+    }
+
+    // Import one series and split its channels.
+    run("Bio-Formats Importer",
+        "open=[" + inputPath + "] " +
+        "autoscale color_mode=Default " +
+        "split_channels " +
+        "view=Hyperstack " +
+        "stack_order=XYCZT " +
+        "series_" + series);
+
+    // Check how many channel images were opened.
+    titles = getList("image.titles");
+
+    if (titles.length <= livingChannelIndex ||
+        titles.length <= deadChannelIndex) {
+
+        print("Skipping series " + series +
+              ": expected channels are unavailable.");
+
+        skipped++;
+        continue;
+    }
+
+    // --------------------------------------------------------
+    // LIVING CELLS
+    // --------------------------------------------------------
+
+    selectWindow(titles[livingChannelIndex]);
+    run("Select None");
+    run("Clear Results");
+
+    run("Find Maxima...",
+        "prominence=" + promC1 + " output=Count");
+
+    living = 0;
+
+    if (nResults > 0) {
+        living = getResult("Count", 0);
+    }
+
+    // --------------------------------------------------------
+    // DEAD CELLS
+    // --------------------------------------------------------
+
+    // Refresh titles in case the importer changed window names.
+    titles = getList("image.titles");
+
+    if (titles.length <= deadChannelIndex) {
+        dead = 0;
+        print("Warning: dead-cell channel unavailable in series "
+              + series + ".");
+    } else {
+        selectWindow(titles[deadChannelIndex]);
+        run("Select None");
+        run("Clear Results");
+
+        run("Find Maxima...",
+            "prominence=" + promC3 + " output=Count");
+
+        dead = 0;
+
+        if (nResults > 0) {
+            dead = getResult("Count", 0);
+        }
+    }
+
+    // --------------------------------------------------------
+    // STORE COUNTS
+    // --------------------------------------------------------
+
+    total = living + dead;
+
+    if (total > 0) {
+        pctDead = 100.0 * dead / total;
+    } else {
+        pctDead = 0;
+    }
+
+    seriesIDs[processed] = series;
+    livingCounts[processed] = living;
+    deadCounts[processed] = dead;
+    totalCounts[processed] = total;
+    deadPercentages[processed] = pctDead;
+
+    processed++;
+
+    print("Series " + series +
+          ": living=" + living +
+          ", dead=" + dead +
+          ", total=" + total);
+
+    // Close all channel images before the next series.
+    while (nImages > 0) {
+        selectImage(getImageID());
+        close();
+    }
+}
+
+// ============================================================
+// BUILD FINAL RESULTS TABLE
+// ============================================================
+
+run("Clear Results");
+
+for (i = 0; i < processed; i++) {
+    setResult("Series", i, seriesIDs[i]);
+    setResult("Dead cells", i, deadCounts[i]);
+    setResult("Living cells", i, livingCounts[i]);
+    setResult("Total", i, totalCounts[i]);
+    setResult("% dead cells", i, deadPercentages[i]);
+}
+
+updateResults();
+
+// ============================================================
+// EXPORT
+// ============================================================
+
+if (processed > 0) {
+    saveAs("Results", outputPath);
+    print("Results saved to: " + outputPath);
+} else {
+    print("No series were successfully processed.");
+}
+
+print("Finished.");
+print("Processed series: " + processed);
+print("Skipped series: " + skipped);
+print("Maximum series index tested: " + (maxSeries - 1));
+print("Check Window > Results for the final table.");
